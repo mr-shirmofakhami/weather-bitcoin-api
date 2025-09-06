@@ -39,6 +39,20 @@ A FastAPI application that provides weather information and Bitcoin price tracki
    # Crypto APIs (Optional)
    COINMARKETCAP_API_KEY=your_coinmarketcap_key_here
    ```  
+   
+4. **Create environment file**
+   ```bash
+   python main.py
+   ```  
+   or
+   ```bash
+   uvicorn main:app --reload --host 0.0.0.0 --port 8000
+   ```  
+   
+5. **The API will be available at:**
+- Main API: http://localhost:8000
+- Interactive Documentation: http://localhost:8000/docs
+- Alternative Documentation: http://localhost:8000/redoc
 
 
 ## Network Requirements
