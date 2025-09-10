@@ -98,7 +98,7 @@ async def test_weather_apis():
             response = requests.get(OPENWEATHER_BASE_URL, params=params, timeout=5)
             results["openweather"] = {
                 "status": "working" if response.status_code == 200 else f"error: {response.status_code}",
-                "api_key_status": "[REDACTED]" if response.status_code == 200 else "invalid or not activated"
+                "api_key_status": "valid" if response.status_code == 200 else "invalid or not activated"
             }
         except Exception as e:
             results["openweather"] = {"status": "error", "message": str(e)}
@@ -271,45 +271,73 @@ async def get_bitcoin_all_sources():
             if source == "coinmarketcap" and not COINMARKETCAP_API_KEY:
                 return source, {"error": "API key required but not configured"}
 
-            headers = {}
-            params = {}
+            # Use the same logic as the working single source endpoint
+            if source == "coinbase":
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(config["url"], timeout=config.get("timeout", 8))
+                        response.raise_for_status()
+                        data = response.json()
 
-            if source == "coinmarketcap":
-                headers = {
-                    'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY,
-                    'Accept': 'application/json'
-                }
-                params = {'symbol': 'BTC', 'convert': 'USD'}
+                        # Use the exact same parsing logic as the working single source
+                        result = parse_crypto_response(source, data)
+                        return source, result
+                except Exception as e:
+                    return source, {"error": f"Coinbase error: {str(e)}"}
 
-            # Use httpx for better async support with retry logic
-            async with httpx.AsyncClient() as client:
-                for attempt in range(2):  # Try twice
-                    try:
-                        response = await client.get(
-                            config["url"],
-                            headers=headers,
-                            params=params,
-                            timeout=config.get("timeout", 5)
-                        )
+            elif source == "binance":
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(config["url"], timeout=config.get("timeout", 5))
+                        response.raise_for_status()
+                        data = response.json()
 
-                        if response.status_code == 200:
-                            data = response.json()
-                            return source, parse_crypto_response(source, data)
-                        else:
-                            if attempt == 0:  # Retry once
+                        # Use the exact same parsing logic as the working single source
+                        result = parse_crypto_response(source, data)
+                        return source, result
+                except Exception as e:
+                    return source, {"error": f"Binance error: {str(e)}"}
+
+            else:
+                # For other sources, use the existing logic
+                headers = {}
+                params = {}
+
+                if source == "coinmarketcap":
+                    headers = {
+                        'X-CMC_PRO_API_KEY': COINMARKETCAP_API_KEY,
+                        'Accept': 'application/json'
+                    }
+                    params = {'symbol': 'BTC', 'convert': 'USD'}
+
+                async with httpx.AsyncClient() as client:
+                    for attempt in range(2):
+                        try:
+                            response = await client.get(
+                                config["url"],
+                                headers=headers,
+                                params=params,
+                                timeout=config.get("timeout", 5)
+                            )
+
+                            if response.status_code == 200:
+                                data = response.json()
+                                return source, parse_crypto_response(source, data)
+                            else:
+                                if attempt == 0:
+                                    await asyncio.sleep(1)
+                                    continue
+                                return source, {"error": f"HTTP {response.status_code}"}
+                        except httpx.TimeoutException:
+                            if attempt == 0:
                                 await asyncio.sleep(1)
                                 continue
-                            return source, {"error": f"HTTP {response.status_code}"}
-                    except httpx.TimeoutException:
-                        if attempt == 0:  # Retry once
-                            await asyncio.sleep(1)
-                            continue
-                        return source, {"error": "Timeout"}
-                    except Exception as e:
-                        if attempt == 0:  # Retry once
-                            await asyncio.sleep(1)
-                            continue
-                        return source, {"error": str(e)}
+                            return source, {"error": "Timeout"}
+                        except Exception as e:
+                            if attempt == 0:
+                                await asyncio.sleep(1)
+                                continue
+                            return source, {"error": str(e)}
 
         except Exception as e:
             return source, {"error": str(e)}
@@ -346,7 +374,7 @@ async def get_bitcoin_all_sources():
 
 @app.get("/bitcoin/source/{source}")
 async def get_bitcoin_from_source(source: str):
-    """Get Bitcoin price from a specific source with better error handling"""
+
     if source not in CRYPTO_APIS:
         raise HTTPException(
             status_code=400,
@@ -375,7 +403,7 @@ async def get_bitcoin_from_source(source: str):
                 'convert': 'USD,EUR,GBP'
             }
         elif source == "nobitex":
-            # Updated Nobitex handling with correct API endpoint
+
             response = requests.get(
                 "https://apiv2.nobitex.ir/v3/orderbook/BTCUSDT",
                 timeout=api_config.get("timeout", 8)
@@ -459,6 +487,8 @@ def parse_crypto_response(source: str, data: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         if source == "coinbase":
+            # Fixed: Coinbase returns rates where 1 BTC = X currency
+            # So we use the rates directly, not 1/rate
             result = {
                 "usd": float(data["data"]["rates"]["USD"]),
                 "eur": float(data["data"]["rates"]["EUR"]),
@@ -482,14 +512,19 @@ def parse_crypto_response(source: str, data: Dict[str, Any]) -> Dict[str, Any]:
             }
 
         elif source == "binance":
+            # Fixed: Binance returns a simple object with price field
             result = {
                 "usd": float(data["price"])
             }
 
         elif source == "kraken":
-            result = {
-                "usd": float(data["result"]["XXBTZUSD"]["c"][0])
-            }
+            # Fixed: Ensure we're getting the correct field from Kraken
+            if "result" in data and "XXBTZUSD" in data["result"]:
+                result = {
+                    "usd": float(data["result"]["XXBTZUSD"]["c"][0])
+                }
+            else:
+                result = {"error": "Unexpected Kraken response format"}
 
         elif source == "nobitex":
             # Handle Nobitex orderbook data
